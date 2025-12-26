@@ -1,7 +1,6 @@
 
-# If your repo's default branch is 'main', change the trigger to main
 trigger:
-- master
+- master  # change to 'main' if your default branch is main
 
 pool:
   name: Default
@@ -12,70 +11,50 @@ pool:
 variables:
   buildPlatform: 'Any CPU'
   buildConfiguration: 'Release'
-  # Globs to try in order
-  slnGlob: '**/*.sln'
-  projGlob: '**/*.csproj'
 
 steps:
-# Ensure we check out the repo
 - checkout: self
   persistCredentials: true
 
-# Helpful: list the files so we can see what's actually available
+# Detect a .sln or fallback to a .csproj and set an output variable BuildTarget
 - powershell: |
     Write-Host "Build.SourcesDirectory: $env:BUILD_SOURCESDIRECTORY"
-    Write-Host "Searching for solution files: $(slnGlob)"
     $sln = Get-ChildItem -Path $env:BUILD_SOURCESDIRECTORY -Recurse -Filter *.sln | Select-Object -First 1
     if ($sln) {
       Write-Host "Found solution: $($sln.FullName)"
+      Write-Output "##vso[task.setvariable variable=BuildTarget]$($sln.FullName)"
+      Write-Output "##vso[task.setvariable variable=BuildTargetType]sln"
     } else {
-      Write-Host "No .sln found; searching for project files: $(projGlob)"
-      $proj = Get-ChildItem -Path $env:BUILD_SourcesDirectory -Recurse -Filter *.csproj | Select-Object -First 1
+      Write-Host "No .sln found; searching for .csproj ..."
+      $proj = Get-ChildItem -Path $env:BUILD_SOURCESDIRECTORY -Recurse -Filter *.csproj | Select-Object -First 1
       if ($proj) {
         Write-Host "Found project: $($proj.FullName)"
+        Write-Output "##vso[task.setvariable variable=BuildTarget]$($proj.FullName)"
+        Write-Output "##vso[task.setvariable variable=BuildTargetType]csproj"
       } else {
         Write-Error "No .sln or .csproj found under $env:BUILD_SOURCESDIRECTORY"
       }
     }
-  displayName: 'List files and detect build target'
+  displayName: 'Detect build target (sln or csproj)'
 
-# Restore (works with either .sln or .csproj)
+# NuGet restore against the detected BuildTarget
 - task: NuGetToolInstaller@1
 
 - task: NuGetCommand@2
-  displayName: 'NuGet restore (.sln preferred, .csproj fallback)'
+  displayName: 'NuGet restore'
   inputs:
-    restoreSolution: '$(slnGlob)'
-  continueOnError: true
+    restoreSolution: '$(BuildTarget)'
 
-# If restore via .sln failed (no sln), attempt restore via .csproj
-- task: NuGetCommand@2
-  condition: failed()  # run only if the previous restore failed
-  displayName: 'NuGet restore fallback (.csproj)'
-  inputs:
-    restoreSolution: '$(projGlob)'
-
-# Build: try .sln first with VSBuild (works best for full .NET Framework)
+# Build using VSBuild (works for both .sln and .csproj)
 - task: VSBuild@1
-  displayName: 'Build solution (.sln)'
+  displayName: 'MSBuild package'
   inputs:
-    solution: '$(slnGlob)'
-    msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:DesktopBuildPackageLocation="$(build.artifactStagingDirectory)\WebApp.zip" /p:DeployIisAppPath="Default Web Site"'
-    platform: '$(buildPlatform)'
-    configuration: '$(buildConfiguration)'
-  continueOnError: true
-
-# Fallback: build .csproj if no .sln or previous step failed
-- task: VSBuild@1
-  condition: failed()
-  displayName: 'Build project (.csproj fallback)'
-  inputs:
-    solution: '$(projGlob)'
+    solution: '$(BuildTarget)'
     msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:DesktopBuildPackageLocation="$(build.artifactStagingDirectory)\WebApp.zip" /p:DeployIisAppPath="Default Web Site"'
     platform: '$(buildPlatform)'
     configuration: '$(buildConfiguration)'
 
-# Publish the packaged artifact (WebApp.zip) and any other build outputs
+# Publish the packaged artifact
 - task: PublishBuildArtifacts@1
   displayName: 'Publish build artifacts'
   inputs:
